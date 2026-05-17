@@ -138,6 +138,34 @@ public:
   // be opened for writing.
   void write_species_file(const std::string& path) const;
 
+  // Returns the number of live complex instances of the species whose
+  // canonical BNGL string equals `canonical_species`.
+  //
+  // `canonical_species` must be a string that RuleMonkey itself emitted
+  // — a `SpeciesRow::species` from `enumerate_species()` or a data-line
+  // pattern from a written `.species` file.  RuleMonkey has no runtime
+  // BNGL-pattern parser, so an arbitrary hand-written pattern is NOT
+  // canonicalized: a string that is not byte-identical to a canonical
+  // label RM would emit yields 0, even when it denotes the same
+  // species.  An embedder that needs pattern-keyed lookup (e.g.
+  // NFsim-parity `get_species_count(pattern)`) must canonicalize the
+  // pattern on its own side first.
+  //
+  // This is a batch query — internally a full pool walk, the same cost
+  // as `enumerate_species()`.  To read many species at once, call
+  // `enumerate_species()` once and index its rows rather than calling
+  // this per species.
+  // Throws std::runtime_error if no session is active.
+  long species_count(const std::string& canonical_species) const;
+
+  // Returns the total number of live complexes in the active session's
+  // pool — the network-free analogue of the total complex/particle
+  // population.  Equals the sum of every `enumerate_species()` row
+  // count, but is computed without canonicalization and so is cheaper
+  // than `enumerate_species()` when only the total is needed.
+  // Throws std::runtime_error if no session is active.
+  long total_complex_count() const;
+
   // Returns the current active-session molecule count for the named imported
   // `MoleculeType`.
   int get_molecule_count(const std::string& molecule_type_name) const;

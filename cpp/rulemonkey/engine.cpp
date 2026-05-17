@@ -7728,4 +7728,30 @@ void Engine::write_species_file(const std::string& path) const {
     out << r.species << "  " << r.count << "\n";
 }
 
+long Engine::species_count(const std::string& canonical) const {
+  // Batch-mode lookup (plan §5; step-6 decision (b) — the cached-
+  // incremental cache stays unconsumed until partial scaling).  Delegate
+  // to the from-scratch enumerate_species() sweep and return the
+  // matching row's count.  enumerate_species() rows are sorted by the
+  // species string, so a binary search pinpoints the row; a string RM
+  // never emits falls between rows and yields 0.
+  const std::vector<SpeciesRow> rows = enumerate_species();
+  auto it =
+      std::lower_bound(rows.begin(), rows.end(), canonical,
+                       [](const SpeciesRow& r, const std::string& key) { return r.species < key; });
+  if (it != rows.end() && it->species == canonical)
+    return it->count;
+  return 0;
+}
+
+long Engine::total_complex_count() const {
+  // Live complexes only — enumerate_species() likewise skips empty
+  // member lists, so this stays equal to the sum of its row counts.
+  long n = 0;
+  for (const auto& cx : impl_->pool.complexes())
+    if (!cx.second.empty())
+      ++n;
+  return n;
+}
+
 } // namespace rulemonkey

@@ -67,6 +67,20 @@ public:
   // opened for writing.
   void write_species_file(const std::string& path) const;
 
+  // Count of live complexes whose canonical species string equals
+  // `canonical` — expected to be a string previously emitted by
+  // enumerate_species().  No pattern parsing: a string that is not
+  // byte-identical to a canonical label RM would emit yields 0.  A
+  // batch query — internally a from-scratch pool walk, the same cost
+  // as enumerate_species().  Empty pool / un-initialized engine: 0.
+  long species_count(const std::string& canonical) const;
+
+  // Number of live complexes in the pool — the network-free analogue
+  // of the total complex/particle population.  Equals the sum of every
+  // enumerate_species() row count, but is computed without
+  // canonicalization.  Empty pool / un-initialized engine: 0.
+  long total_complex_count() const;
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -2390,4 +2390,16 @@ void RuleMonkeySimulator::write_species_file(const std::string& path) const {
   impl_->session->write_species_file(path);
 }
 
+long RuleMonkeySimulator::species_count(const std::string& canonical_species) const {
+  if (!impl_->session)
+    throw std::runtime_error("No active session");
+  return impl_->session->species_count(canonical_species);
+}
+
+long RuleMonkeySimulator::total_complex_count() const {
+  if (!impl_->session)
+    throw std::runtime_error("No active session");
+  return impl_->session->total_complex_count();
+}
+
 } // namespace rulemonkey

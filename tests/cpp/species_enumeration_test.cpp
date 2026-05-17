@@ -141,7 +141,8 @@ void test_species_file_roundtrip(const std::string& aa_xml) {
   }
 }
 
-// enumerate_species / write_species_file require a live session.
+// enumerate_species / write_species_file / species_count /
+// total_complex_count all require a live session.
 void test_no_session_throws(const std::string& aa_xml) {
   RuleMonkeySimulator sim(aa_xml);
   bool threw = false;
@@ -159,6 +160,55 @@ void test_no_session_throws(const std::string& aa_xml) {
     threw = true;
   }
   check(threw, "write_species_file() without a session throws");
+
+  threw = false;
+  try {
+    (void)sim.species_count("A(a)");
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  check(threw, "species_count() without a session throws");
+
+  threw = false;
+  try {
+    (void)sim.total_complex_count();
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  check(threw, "total_complex_count() without a session throws");
+}
+
+// species_count() and total_complex_count() are step-6 additive surface
+// on top of enumerate_species() (issue #9 §2 step 6).  They must agree
+// with it exactly: species_count(row.species) == row.count for every
+// census row, total_complex_count() == the sum of all row counts, and a
+// canonical string RuleMonkey never emits yields 0.  The agreement must
+// hold across simulate() segments, since both delegate to a fresh batch
+// sweep.  Model-agnostic — drives any model the caller passes.
+void test_species_count_and_total(const std::string& xml, const std::string& tag) {
+  RuleMonkeySimulator sim(xml);
+  sim.initialize(42);
+
+  double t = 0.0;
+  for (int seg = 0; seg < 3; ++seg) {
+    auto rows = sim.enumerate_species();
+    long sum_counts = 0;
+    for (const auto& r : rows) {
+      check(sim.species_count(r.species) == r.count,
+            tag + ": species_count('" + r.species + "') matches its enumerate_species() row");
+      sum_counts += r.count;
+    }
+    check(sim.total_complex_count() == sum_counts,
+          tag + ": total_complex_count() == sum of enumerate_species() row counts, segment " +
+              std::to_string(seg));
+    // Strings RuleMonkey never emits as canonical labels: a bogus
+    // molecule type, and the empty string.  Parser-free lookup -> 0.
+    check(sim.species_count("Zzz(qqq)") == 0, tag + ": species_count() of an absent species is 0");
+    check(sim.species_count("") == 0, tag + ": species_count() of the empty string is 0");
+    double const next = t + 3.0;
+    sim.simulate(t, next, 1);
+    t = next;
+  }
 }
 
 // A symmetric multi-molecule model: P(s,s) self-binding builds long
@@ -272,6 +322,11 @@ int main(int argc, char* argv[]) {
     test_species_file_roundtrip(aa_xml);
     test_no_session_throws(aa_xml);
     test_symmetric_pipeline(hp_xml);
+    // Step-6 session API: species_count / total_complex_count agree with
+    // enumerate_species() on a monomer+homodimer model and on the
+    // symmetric multi-molecule homopolymer.
+    test_species_count_and_total(aa_xml, "A_plus_A");
+    test_species_count_and_total(hp_xml, "ss_symmetric_homopoly");
     // Cached-incremental layer: merge-heavy, split-heavy, and ring-forming
     // models, each swept many times mid-run.  Seed totals: A_plus_A
     // A_tot=1000; ss_symmetric_homopoly P_tot=200; ft_ring_closure

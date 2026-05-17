@@ -89,10 +89,40 @@ active session:
   canonical pattern string and an instance count.
 - `void write_species_file(const std::string& path) const` — writes the
   rows to `path` in the format above.
+- `long species_count(const std::string& canonical_species) const` —
+  the count for a single species, looked up by its canonical string.
+- `long total_complex_count() const` — the total number of live
+  complexes in the pool (the sum of every row's count).
 
-Both require a live session (`initialize()` / `simulate()` first) and
-throw `std::runtime_error` otherwise. Enumeration is a one-shot pool
+All four require a live session (`initialize()` / `simulate()` first)
+and throw `std::runtime_error` otherwise. Enumeration is a one-shot pool
 walk, intended to be called while the simulation is paused (between
 `simulate()` segments or after a run) — not per SSA event.
+
+### Looking up a single species — `species_count`
+
+`species_count` answers "how many of *this* species are live" without
+the caller scanning the whole `enumerate_species()` vector. Its key is a
+**canonical string RuleMonkey itself emitted** — a `SpeciesRow::species`
+value or a data-line pattern from a written `.species` file:
+
+```cpp
+for (const auto& row : sim.enumerate_species())
+  assert(sim.species_count(row.species) == row.count);
+```
+
+RuleMonkey has **no runtime BNGL-pattern parser** (that is [issue #9
+§1][i9], separate work). `species_count` therefore does *not*
+canonicalize its argument: a hand-written pattern that is not
+byte-identical to a label RuleMonkey would emit returns `0`, even when
+it denotes the same species. An embedder that needs pattern-keyed lookup
+(`get_species_count("A(b!1).B(a!1)")`-style, NFsim-parity) must
+canonicalize the pattern on its own side and pass the canonical form.
+
+`species_count` is a *batch query*: each call is internally a full pool
+walk, the same cost as `enumerate_species()`. To read many species,
+call `enumerate_species()` once and index its rows rather than calling
+`species_count` per species. `total_complex_count()` is cheaper than
+either — it counts live complexes without canonicalizing them.
 
 [i9]: https://github.com/richardposner/RuleMonkey/issues/9
