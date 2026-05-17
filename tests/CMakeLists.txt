@@ -108,6 +108,19 @@ target_include_directories(canonical_test PRIVATE ${_rulemonkey_private_include_
 
 add_test(NAME canonical_test COMMAND canonical_test)
 
+# Runtime pattern-parser unit test (issue #9 §1 step 2).  Pure unit
+# test: parse_species_pattern is string + Model -> Pattern with no
+# engine state, so a hand-built Model drives the accepted grammar,
+# model resolution (types / components / states / symmetric components
+# / bonds) and the exact-species error surface.  Needs PRIVATE access
+# to cpp/rulemonkey/pattern_parser.hpp (the parser is engine-internal,
+# not part of the public API).
+add_executable(pattern_parser_test cpp/pattern_parser_test.cpp)
+target_link_libraries(pattern_parser_test PRIVATE rulemonkey)
+target_include_directories(pattern_parser_test PRIVATE ${_rulemonkey_private_include_dir})
+
+add_test(NAME pattern_parser_test COMMAND pattern_parser_test)
+
 # Species enumeration + `.species` output (issue #9 §2): exercises the
 # batch pipeline end to end — pool walk, extract_complex, canonical
 # labeling, isomorphism dedup, sorted SpeciesRow rows, and the
