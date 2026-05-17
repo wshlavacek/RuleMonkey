@@ -121,6 +121,21 @@ target_include_directories(pattern_parser_test PRIVATE ${_rulemonkey_private_inc
 
 add_test(NAME pattern_parser_test COMMAND pattern_parser_test)
 
+# Pattern-keyed species-method integration test (issue #9 §1 step 3):
+# drives get_species_count / add_species / remove_species /
+# set_species_count through the public API — counts agree with
+# enumerate_species(), single- and multi-molecule add/remove round-trip,
+# the SSA loop still runs after a structural mutation, and the error
+# surface (no session, malformed pattern, bad counts) throws.
+add_executable(species_methods_test cpp/species_methods_test.cpp)
+target_link_libraries(species_methods_test PRIVATE rulemonkey)
+
+add_test(
+    NAME species_methods_test
+    COMMAND species_methods_test
+        ${_rulemonkey_test_dir}/reference/nfsim/xml/A_plus_A.xml
+)
+
 # Species enumeration + `.species` output (issue #9 §2): exercises the
 # batch pipeline end to end — pool walk, extract_complex, canonical
 # labeling, isomorphism dedup, sorted SpeciesRow rows, and the

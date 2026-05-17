@@ -111,13 +111,12 @@ for (const auto& row : sim.enumerate_species())
   assert(sim.species_count(row.species) == row.count);
 ```
 
-RuleMonkey has **no runtime BNGL-pattern parser** (that is [issue #9
-§1][i9], separate work). `species_count` therefore does *not*
-canonicalize its argument: a hand-written pattern that is not
-byte-identical to a label RuleMonkey would emit returns `0`, even when
-it denotes the same species. An embedder that needs pattern-keyed lookup
-(`get_species_count("A(b!1).B(a!1)")`-style, NFsim-parity) must
-canonicalize the pattern on its own side and pass the canonical form.
+`species_count` does *not* parse or canonicalize its argument: a
+hand-written pattern that is not byte-identical to a label RuleMonkey
+would emit returns `0`, even when it denotes the same species. For
+pattern-keyed lookup from an arbitrary hand-written BNGL species string,
+use `get_species_count` — see [Pattern-keyed species API](#pattern-keyed-species-api-issue-9-1)
+below — which parses and canonicalizes the pattern internally.
 
 `species_count` is a *batch query*: each call is internally a full pool
 walk, the same cost as `enumerate_species()`. To read many species,
@@ -125,4 +124,64 @@ call `enumerate_species()` once and index its rows rather than calling
 `species_count` per species. `total_complex_count()` is cheaper than
 either — it counts live complexes without canonicalizing them.
 
+## Pattern-keyed species API (issue #9 §1)
+
+The methods above key on a *canonical string RuleMonkey emitted*. For
+embedders that need NFsim-style session control keyed on a **runtime
+BNGL species-pattern string** — a string the caller writes by hand,
+e.g. `"A(b!1).B(a!1)"` — `RuleMonkeySimulator` exposes four further
+methods on an active session:
+
+- `int  get_species_count(const std::string& pattern) const` — live
+  count of the species denoted by `pattern`.
+- `void add_species(const std::string& pattern, int count)` —
+  instantiate `count` fresh copies of the species into the pool.
+- `void remove_species(const std::string& pattern, int count)` —
+  remove `count` live copies (throws if fewer exist).
+- `void set_species_count(const std::string& pattern, int count)` —
+  add or remove the difference so the live count becomes exactly
+  `count`.
+
+Each parses `pattern` against the loaded molecule types, so — unlike
+`species_count` — the string need *not* be a canonical label RuleMonkey
+emitted. All four require a live session and are paused-session calls:
+none advances logical time or touches the SSA event loop.
+
+### Accepted pattern grammar
+
+The runtime parser accepts an **exact, fully-specified, connected
+species** — and only that (issue #9 §1 design decision A). A pattern is
+a `.`-separated list of molecules, each `Name(comp,comp,...)`, each
+component `name[~state][!bond]`:
+
+- every molecule name must resolve to a declared `MoleculeType`;
+- every component of each molecule type must be listed exactly once —
+  same-named ("symmetric") components are matched positionally by
+  occurrence;
+- every component with a state set must carry a concrete `~state` drawn
+  from that set; stateless components must carry none;
+- bonds are numeric labels `!N`; each `N` must appear on exactly two
+  distinct components. The bond wildcards `!+` and `!?`, don't-care
+  states, and omitted components are **rejected** — they describe a
+  pattern *class*, not one instantiable species;
+- the molecules must form a single connected complex.
+
+A pattern that violates any of these throws `std::runtime_error` naming
+the offending token. A canonical species string from `enumerate_species()`
+or a `.species` file is always a valid input — so
+`get_species_count(row.species)` agrees with `species_count(row.species)`
+and with `row.count`.
+
+### Evaluating expressions — `evaluate_expression`
+
+Also part of issue #9 §1, `double evaluate_expression(const std::string&
+expr, const std::unordered_map<std::string,double>& extra = {})`
+compiles and evaluates an arbitrary BNGL expression against the active
+session. It resolves every parameter, observable, global function, and
+the `time()` / `t` clock against the current pool; the `extra` map
+layers additional name=value bindings on top, shadowing model symbols on
+a clash. It needs no pattern parser — the expression evaluator from
+[issue #6] already compiles BNGL expression strings.
+
 [i9]: https://github.com/richardposner/RuleMonkey/issues/9
+[issue #6]: https://github.com/richardposner/RuleMonkey/issues/6

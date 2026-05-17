@@ -3227,6 +3227,47 @@ struct Engine::Impl {
     }
   }
 
+  // Instantiate one concrete copy of an exact species `pat` into the
+  // pool (issue #9 §1 add_species).  `pat` comes from
+  // parse_species_pattern: every molecule lists every component (in
+  // listed order) with a concrete state, and pat.bonds gives the edges
+  // by flat component index.  This is the parse-side analogue of
+  // init_species's per-instance inner loop.
+  void instantiate_pattern_complex(const Pattern& pat) {
+    // flat component index -> the pool component id just created for it
+    std::vector<int> flat_to_cid;
+    flat_to_cid.reserve(pat.flat_comp_count());
+    for (const auto& pm : pat.molecules) {
+      int const mid = pool.add_molecule(pm.type_index);
+      const auto& mol = pool.molecule(mid);
+      for (const auto& pc : pm.components) {
+        // comp_type_index addresses the physical component; comp_ids is
+        // indexed by molecule-type declaration order, exactly as
+        // pool.add_molecule allocates it.
+        int const cid = mol.comp_ids[pc.comp_type_index];
+        if (pc.required_state_index >= 0)
+          pool.set_state(cid, pc.required_state_index);
+        flat_to_cid.push_back(cid);
+      }
+    }
+    for (const auto& b : pat.bonds)
+      pool.add_bond(flat_to_cid[b.comp_flat_a], flat_to_cid[b.comp_flat_b]);
+  }
+
+  // Resync all derived state after a structural pool mutation that is
+  // not localized to one molecule type (add_species / remove_species,
+  // issue #9 §1).  Unlike add_molecules' targeted rescan, every rule is
+  // rescanned: a multi-molecule species touches several types at once,
+  // and these are rare paused-session calls, so a full recompute is
+  // both correct and simple.
+  void resync_all_after_structural_change() {
+    compute_observables();
+    for (int ri = 0; ri < static_cast<int>(model.rules.size()); ++ri)
+      rescan_all_molecules_for_rule(ri);
+    recompute_total_propensity();
+    init_incremental_observables();
+  }
+
   // Embedding overcounting is now corrected at count time inside
   // count_embeddings_single via its `reacting_local` parameter (passed
   // from rs.reacting_local_a/_b for both single-mol and multi-mol
@@ -7606,6 +7647,44 @@ canonical::ComplexGraph extract_complex(const AgentPool& pool, const Model& mode
   return g;
 }
 
+// Build a ComplexGraph straight from a parsed species Pattern (issue #9
+// §1) — the parse-side analogue of extract_complex.  `pat` is an exact,
+// fully-specified species from parse_species_pattern, so each pattern
+// molecule carries every component (in listed order) with a concrete
+// state, and pat.bonds gives the edges by flat component index.  The
+// graph is isomorphic to the one extract_complex builds for the same
+// physical species, so canonical_label yields the same string — that
+// is what makes pattern-keyed species_count a byte-equal lookup.
+canonical::ComplexGraph pattern_to_complex_graph(const Pattern& pat) {
+  canonical::ComplexGraph g;
+  for (const auto& pm : pat.molecules) {
+    std::vector<std::pair<std::string, std::string>> comps;
+    comps.reserve(pm.components.size());
+    for (const auto& pc : pm.components)
+      comps.emplace_back(pc.name, pc.required_state); // "" for a stateless component
+    g.add_molecule(pm.type_name, comps);
+  }
+  // pat.bonds endpoints are flat component indices; map each back to its
+  // (molecule index, local component index) — components were fed to
+  // add_molecule in the same listed order pat.flat_index() counts in.
+  const auto flat_to_loc = [&pat](int flat) -> std::pair<int, int> {
+    int acc = 0;
+    for (int mi = 0; mi < static_cast<int>(pat.molecules.size()); ++mi) {
+      const int n = static_cast<int>(pat.molecules[mi].components.size());
+      if (flat < acc + n)
+        return {mi, flat - acc};
+      acc += n;
+    }
+    throw std::runtime_error("pattern_to_complex_graph: flat-index overflow");
+  };
+  for (const auto& b : pat.bonds) {
+    const auto a = flat_to_loc(b.comp_flat_a);
+    const auto c = flat_to_loc(b.comp_flat_b);
+    g.add_bond(a.first, a.second, c.first, c.second);
+  }
+  return g;
+}
+
 } // namespace
 
 void Engine::initialize() {
@@ -7811,6 +7890,65 @@ long Engine::total_complex_count() const {
     if (!cx.second.empty())
       ++n;
   return n;
+}
+
+// --- Pattern-keyed species methods (issue #9 §1) ---------------------------
+
+long Engine::get_species_count(const Pattern& pat) const {
+  // Canonicalize the parsed species and reuse the §2 batch lookup: the
+  // pattern's canonical label is byte-equal to the label the pool's
+  // copies of the same species carry, so species_count() matches them.
+  const std::string label = canonical::canonical_label(pattern_to_complex_graph(pat));
+  return species_count(label);
+}
+
+void Engine::add_species(const Pattern& pat, int count) {
+  if (count <= 0)
+    throw std::runtime_error("add_species: count must be positive");
+  for (int i = 0; i < count; ++i)
+    impl_->instantiate_pattern_complex(pat);
+  impl_->resync_all_after_structural_change();
+}
+
+void Engine::remove_species(const Pattern& pat, int count) {
+  if (count <= 0)
+    throw std::runtime_error("remove_species: count must be positive");
+
+  // Find every live complex whose canonical label matches the species.
+  const std::string target = canonical::canonical_label(pattern_to_complex_graph(pat));
+  std::vector<int> matching; // complex ids
+  for (const auto& cx : impl_->pool.complexes()) {
+    if (cx.second.empty())
+      continue;
+    const auto graph = extract_complex(impl_->pool, impl_->model, cx.second);
+    if (canonical::canonical_label(graph) == target)
+      matching.push_back(cx.first);
+  }
+  if (static_cast<int>(matching.size()) < count)
+    throw std::runtime_error("remove_species: only " + std::to_string(matching.size()) +
+                             " live cop-" + (matching.size() == 1 ? "y" : "ies") + " of '" +
+                             target + "' (requested " + std::to_string(count) + ")");
+
+  // Delete the first `count` matches.  molecules_in_complex returns a
+  // reference into the live complex map, which delete_molecule mutates,
+  // so snapshot the member list before deleting from it.
+  for (int i = 0; i < count; ++i) {
+    const std::vector<int> members = impl_->pool.molecules_in_complex(matching[i]);
+    for (int const mid : members)
+      impl_->pool.delete_molecule(mid);
+  }
+  impl_->resync_all_after_structural_change();
+}
+
+void Engine::set_species_count(const Pattern& pat, int count) {
+  if (count < 0)
+    throw std::runtime_error("set_species_count: count must be non-negative");
+  const long current = get_species_count(pat);
+  const long delta = static_cast<long>(count) - current;
+  if (delta > 0)
+    add_species(pat, static_cast<int>(delta));
+  else if (delta < 0)
+    remove_species(pat, static_cast<int>(-delta));
 }
 
 } // namespace rulemonkey

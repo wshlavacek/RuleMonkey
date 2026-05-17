@@ -3,6 +3,7 @@
 #include "engine.hpp"
 #include "expr_eval.hpp"
 #include "model.hpp"
+#include "pattern_parser.hpp"
 #include "table_function.hpp"
 
 #include "bngsim/expression.hpp"
@@ -2408,6 +2409,44 @@ long RuleMonkeySimulator::total_complex_count() const {
   if (!impl_->session)
     throw std::runtime_error("No active session");
   return impl_->session->total_complex_count();
+}
+
+// ---------------------------------------------------------------------------
+// Pattern-keyed species methods (issue #9 §1)
+// ---------------------------------------------------------------------------
+// Each parses the runtime pattern string against the loaded molecule
+// types — parse_species_pattern throws on a malformed / under-specified
+// / wildcard pattern — then delegates the resolved Pattern to the
+// engine.  The model the parser resolves against is the simulator's own
+// copy; the engine holds an index-identical snapshot, so the resolved
+// Pattern's type indices line up on both sides.
+
+int RuleMonkeySimulator::get_species_count(const std::string& pattern) const {
+  if (!impl_->session)
+    throw std::runtime_error("No active session");
+  const Pattern pat = parse_species_pattern(pattern, impl_->model);
+  return static_cast<int>(impl_->session->get_species_count(pat));
+}
+
+void RuleMonkeySimulator::add_species(const std::string& pattern, int count) {
+  if (!impl_->session)
+    throw std::runtime_error("No active session");
+  const Pattern pat = parse_species_pattern(pattern, impl_->model);
+  impl_->session->add_species(pat, count);
+}
+
+void RuleMonkeySimulator::remove_species(const std::string& pattern, int count) {
+  if (!impl_->session)
+    throw std::runtime_error("No active session");
+  const Pattern pat = parse_species_pattern(pattern, impl_->model);
+  impl_->session->remove_species(pat, count);
+}
+
+void RuleMonkeySimulator::set_species_count(const std::string& pattern, int count) {
+  if (!impl_->session)
+    throw std::runtime_error("No active session");
+  const Pattern pat = parse_species_pattern(pattern, impl_->model);
+  impl_->session->set_species_count(pat, count);
 }
 
 } // namespace rulemonkey

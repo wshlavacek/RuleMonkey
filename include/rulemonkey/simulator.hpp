@@ -144,13 +144,12 @@ public:
   //
   // `canonical_species` must be a string that RuleMonkey itself emitted
   // — a `SpeciesRow::species` from `enumerate_species()` or a data-line
-  // pattern from a written `.species` file.  RuleMonkey has no runtime
-  // BNGL-pattern parser, so an arbitrary hand-written pattern is NOT
-  // canonicalized: a string that is not byte-identical to a canonical
+  // pattern from a written `.species` file.  This method does NOT parse
+  // or canonicalize: a string that is not byte-identical to a canonical
   // label RM would emit yields 0, even when it denotes the same
-  // species.  An embedder that needs pattern-keyed lookup (e.g.
-  // NFsim-parity `get_species_count(pattern)`) must canonicalize the
-  // pattern on its own side first.
+  // species.  For pattern-keyed lookup from an arbitrary hand-written
+  // BNGL species string, use `get_species_count(pattern)` below — it
+  // parses and canonicalizes the pattern internally.
   //
   // This is a batch query — internally a full pool walk, the same cost
   // as `enumerate_species()`.  To read many species at once, call
@@ -166,6 +165,41 @@ public:
   // than `enumerate_species()` when only the total is needed.
   // Throws std::runtime_error if no session is active.
   long total_complex_count() const;
+
+  // --- Pattern-keyed species methods (issue #9 §1) -----------------------
+  //
+  // These four methods accept a runtime BNGL species-pattern string —
+  // e.g. `"A(b!1).B(a!1)"` — parsed against the loaded molecule types
+  // by RuleMonkey's runtime pattern parser.  Unlike `species_count()`
+  // above, the string need NOT be a canonical label RuleMonkey emitted:
+  // it is parsed and canonicalized internally.
+  //
+  // Scope is exact, fully-specified, connected species (issue #9 §1
+  // design decision A): every molecule lists every component, every
+  // stateful component carries a concrete `~state`, bonds are numeric
+  // labels, and the molecules form one complex.  A malformed,
+  // under-specified, or wildcard pattern (`!+`, `!?`, omitted
+  // components) throws std::runtime_error naming the offending token.
+  //
+  // All four throw std::runtime_error if no session is active.  They
+  // are paused-session calls — none advances logical time or touches
+  // the SSA event loop.
+
+  // Returns the number of live complexes that are the species denoted
+  // by `pattern`.
+  int get_species_count(const std::string& pattern) const;
+
+  // Instantiates `count` fresh copies of the species `pattern` into the
+  // active session's pool.  Throws if `count <= 0`.
+  void add_species(const std::string& pattern, int count);
+
+  // Removes `count` live copies of the species `pattern` from the pool.
+  // Throws if `count <= 0`, or if fewer than `count` copies are live.
+  void remove_species(const std::string& pattern, int count);
+
+  // Drives the live count of species `pattern` to exactly `count`,
+  // adding or removing the difference.  Throws if `count < 0`.
+  void set_species_count(const std::string& pattern, int count);
 
   // Returns the current active-session molecule count for the named imported
   // `MoleculeType`.

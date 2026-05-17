@@ -51,6 +51,31 @@ public:
   int get_molecule_count(const std::string& type_name) const;
   void add_molecules(const std::string& type_name, int count);
 
+  // --- Pattern-keyed species methods (issue #9 §1) -----------------------
+  //
+  // Each takes a `Pattern` produced by parse_species_pattern: an exact,
+  // fully-specified, connected species.  These are paused-session
+  // calls — none touches the SSA event loop.
+
+  // Live instance count of the species denoted by `pat` — `pat`
+  // canonicalized, then matched byte-equal against the pool's
+  // canonical labels (the §2 species_count path).
+  long get_species_count(const Pattern& pat) const;
+
+  // Instantiate `count` fresh copies of the species `pat` into the
+  // pool, then resync rule propensities and observable tracking.
+  // Throws if `count <= 0`.
+  void add_species(const Pattern& pat, int count);
+
+  // Remove `count` live copies of the species `pat` from the pool,
+  // then resync.  Throws if `count <= 0`, or if fewer than `count`
+  // live copies exist.
+  void remove_species(const Pattern& pat, int count);
+
+  // Drive the live count of species `pat` to exactly `count` by adding
+  // or removing the difference.  Throws if `count < 0`.
+  void set_species_count(const Pattern& pat, int count);
+
   // Evaluate an arbitrary BNGL expression string against the current
   // session state (issue #9 §1).  Resolvable symbols: every model
   // parameter, the bare clock `t` and the `time()` builtin, every
