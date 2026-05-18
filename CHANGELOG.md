@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.2.0] — 2026-05-16
+## [3.2.0] — 2026-05-18
 
 ### Added
 
@@ -87,6 +87,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always-true callback produces a bit-identical trajectory to the
   no-callback path.
 
+- **Species enumeration, canonical complex labeling, and `.species`
+  output.** RuleMonkey can now enumerate the distinct chemical species
+  in the live pool by graph isomorphism. A new DIY canonical-labeling
+  core (`cpp/rulemonkey/canonical.{hpp,cpp}` — 1-WL color refinement
+  plus individualization–refinement for symmetric residue such as rings
+  and homo-oligomers; no nauty/bliss, preserving the cleanroom property)
+  assigns each complex a canonical normalized-BNGL label.
+  `RuleMonkeySimulator` gains `enumerate_species()` (returns `SpeciesRow`
+  records — a new type in `types.hpp`), `write_species_file(path)`
+  (BNG-format `.species` output, live species only, NFsim `-ss` parity —
+  see [`docs/species_format.md`](docs/species_format.md)),
+  `species_count(canonical_species)`, and `total_complex_count()`. A new
+  `rm_driver --species <path>` flag writes the `.species` file from the
+  command line. A cached-incremental labeling mode (per-complex cached
+  label with dirty-bit invalidation in the structural mutators) is built
+  and validated by a Debug/ASan-build invariant — cached label equals a
+  from-scratch recompute, gated by the `RULEMONKEY_CANONICAL_CACHE_SELFCHECK`
+  compile definition — awaiting its downstream consumer. Closes
+  [#9](https://github.com/richardposner/RuleMonkey/issues/9) §2. New
+  ctest cases `canonical_test`, `species_enumeration_test`. Header-only
+  ABI change — consumers must rebuild against the new headers.
+
+- **Session API: live expression evaluation and pattern-keyed species
+  methods.** On an active session, `RuleMonkeySimulator` gains
+  `evaluate_expression(expr, extra)` — compiles and evaluates an
+  arbitrary BNGL expression against the live session (parameters,
+  observables, global functions, and `time()`/`t`; an optional `extra`
+  map shadows those names on clash) — and four pattern-keyed species
+  methods, `get_species_count` / `add_species` / `remove_species` /
+  `set_species_count`, each taking a BNGL species-pattern string. A new
+  runtime BNGL species-pattern parser (`cpp/rulemonkey/pattern_parser.{hpp,cpp}`)
+  backs the latter four: it accepts exact, fully-specified, connected
+  species (every component listed, stateful components with a concrete
+  `~state`, numeric bonds) and rejects partial patterns (`!+` / `!?` /
+  omitted components). `get_species_count` canonicalizes the parsed
+  species and reuses the `species_count` lookup above;
+  `add_`/`remove_`/`set_` resync all rule propensities after the
+  structural change. Closes
+  [#9](https://github.com/richardposner/RuleMonkey/issues/9) §1 (and,
+  with §2 above and §3 — which needed no work — issue #9 in full). New
+  ctest cases `evaluate_expression_test`, `pattern_parser_test`,
+  `species_methods_test`. Header-only ABI change — consumers must
+  rebuild against the new headers.
+
 ### Changed
 
 - **Expression evaluator: hand-rolled parser replaced with ExprTk.** The
@@ -111,6 +155,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PROJECT_IS_TOP_LEVEL`, `RULEMONKEY_WARNINGS_AS_ERRORS` defaults off
   when RuleMonkey is added as a subdirectory, and tests no longer depend
   on `CMAKE_SOURCE_DIR`.
+
+- **Local-function rate laws: redundant per-molecule observable
+  re-evaluation eliminated.** On models with local-function rate laws,
+  `evaluate_local_rate` recomputed each rule's local observables from
+  scratch (`count_embeddings_*`) for every affected molecule on every
+  event — up to ~75% of wall time on local-function-heavy models.
+  `evaluate_observable_on` now routes tracked `Molecules`-type
+  observables through the per-molecule `obs_mol_contrib` table that the
+  species-observable incremental machinery already maintains and
+  refreshes before the propensity recompute each event: per-molecule
+  scope becomes a table read, complex-wide scope a sum over the complex
+  — no embedding counts. A from-scratch recompute remains as a
+  bounds-checked fallback, and a Debug/ASan-build invariant (gated by
+  the `RULEMONKEY_LOCAL_OBS_SELFCHECK` compile definition) cross-checks
+  the fast path against it. Wall-time reductions: `isingspin_localfcn`
+  71%, `ANx` 20%, `AN` 16%, `t3` 9%. Closes
+  [#10](https://github.com/richardposner/RuleMonkey/issues/10). No
+  public API or header change; SSA trajectories are bit-identical.
 
 ## [3.1.2] — 2026-05-02
 
