@@ -2780,6 +2780,19 @@ struct Engine::Impl {
   ObsIncrProfile obs_incr_profile_;
   SrProfile sr_profile_;
   ExprEvalProfile expr_eval_profile_;
+  // issue #10 spike state.  Per (observable, scope-id) key: the last
+  // computed value and the event epoch it was computed in.  Lets
+  // evaluate_observable_on classify each call as a fresh compute, an
+  // intra-event repeat (per-event memoization would catch it), or a
+  // cross-event repeat whose value happens to be unchanged (only a
+  // persistent incremental tracker would catch it).  Touched only under
+  // `if constexpr (kExprEvalProfile)`, so it stays empty in normal builds.
+  struct EooSpikeRec {
+    double value;
+    uint64_t epoch;
+  };
+  std::unordered_map<uint64_t, EooSpikeRec> eoo_spike_prev_;
+  uint64_t eoo_spike_epoch_ = 0;
   // Per-Engine homes for the two profile structs whose call sites are
   // static free functions (count_multi_mol_fast / count_2mol_1bond_fc).
   // Threaded in by pointer so concurrent Engines on different threads
@@ -4806,10 +4819,16 @@ struct Engine::Impl {
   // Evaluate an observable over a set of candidate molecules.
   // When complex_wide is true, candidates are all molecules in mol_id's complex;
   // otherwise only mol_id itself is considered.
-  double evaluate_observable_on(const Observable& obs, int mol_id, bool complex_wide) const {
+  // `obs_idx` is the observable's index in model.observables — used only
+  // by the issue #10 spike instrumentation to key the redundancy tracker.
+  // Not `const`: the spike mutates expr_eval_profile_ / eoo_spike_prev_.
+  double evaluate_observable_on(const Observable& obs, int mol_id, bool complex_wide, int obs_idx) {
     if (!pool.molecule(mol_id).active)
       return 0.0;
     double total = 0;
+    // count_embeddings_* invocations (issue #10 spike); unread when the
+    // profiler gate is compiled out.
+    [[maybe_unused]] uint64_t width = 0;
     if (complex_wide) {
       int const cx = pool.complex_of(mol_id);
       for (auto& pat : obs.patterns) {
@@ -4821,6 +4840,7 @@ struct Engine::Impl {
           auto& mol = pool.molecule(mid);
           if (!mol.active || mol.type_index != pm.type_index)
             continue;
+          ++width;
           total += multi ? count_multi_molecule_embeddings(pool, mid, pat, model)
                          : count_embeddings_single(pool, mid, pm, model);
         }
@@ -4833,9 +4853,38 @@ struct Engine::Impl {
         if (pool.molecule(mol_id).type_index != pm.type_index)
           continue;
         bool const multi = pat.molecules.size() > 1;
+        ++width;
         total += multi ? count_multi_molecule_embeddings(pool, mol_id, pat, model)
                        : count_embeddings_single(pool, mol_id, pm, model);
       }
+    }
+    // issue #10 spike: classify this call against the last computation of
+    // the same (observable, scope-id) key.  Within one event the graph is
+    // static, so an unchanged result that was last seen this same epoch is
+    // reclaimable by per-event memoization; an unchanged result last seen
+    // in an earlier epoch needs a persistent incremental tracker.
+    if constexpr (kExprEvalProfile) {
+      auto& p = expr_eval_profile_;
+      p.eoo_calls++;
+      p.eoo_embed_counts += width;
+      uint32_t const scope_id = complex_wide ? static_cast<uint32_t>(pool.complex_of(mol_id))
+                                             : static_cast<uint32_t>(mol_id);
+      uint64_t const key = (static_cast<uint64_t>(static_cast<uint32_t>(obs_idx)) << 33) |
+                           (static_cast<uint64_t>(complex_wide) << 32) |
+                           static_cast<uint64_t>(scope_id);
+      if (complex_wide)
+        p.eoo_complex_wide++;
+      auto it = eoo_spike_prev_.find(key);
+      if (it != eoo_spike_prev_.end() && it->second.value == total) {
+        p.eoo_unchanged_total++;
+        p.eoo_redundant_embed += width;
+        if (it->second.epoch == eoo_spike_epoch_)
+          p.eoo_unchanged_intra++;
+      }
+      if (it == eoo_spike_prev_.end())
+        eoo_spike_prev_.emplace(key, EooSpikeRec{total, eoo_spike_epoch_});
+      else
+        it->second = EooSpikeRec{total, eoo_spike_epoch_};
     }
     return total;
   }
@@ -4891,7 +4940,7 @@ struct Engine::Impl {
     }
     for (int const oi : local_obs_indices) {
       auto& obs = model.observables[oi];
-      eval_vars_flat[eval_obs_slot[oi]] = evaluate_observable_on(obs, mol_id, !per_molecule);
+      eval_vars_flat[eval_obs_slot[oi]] = evaluate_observable_on(obs, mol_id, !per_molecule, oi);
     }
     if constexpr (kExprEvalProfile) {
       if (elr_sampled) {
@@ -4948,6 +4997,13 @@ struct Engine::Impl {
   // --- Incremental update after reaction firing ---
 
   void incremental_update(const std::unordered_set<int>& affected_mols) {
+    // issue #10 spike: each incremental_update is one event.  Advance the
+    // epoch so evaluate_observable_on can tell intra-event repeats apart
+    // from cross-event ones.
+    if constexpr (kExprEvalProfile) {
+      eoo_spike_epoch_++;
+      expr_eval_profile_.eoo_events++;
+    }
     // Measurement gate (kIncrUpdateProfile).  On sampled (1-in-K) calls we
     // bracket outer sub-phases with chrono; within those, every Mth per-mid
     // inner-loop entry records recompute-body sub-phase spans.  Logic below

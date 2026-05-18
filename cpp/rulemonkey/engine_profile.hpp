@@ -481,6 +481,20 @@ struct ExprEvalProfile {
   uint64_t local_expr_eval_ns = 0;
   uint64_t sampled_uev_calls = 0; // bracketed update_eval_vars rebuilds
   uint64_t update_eval_vars_ns = 0;
+  // --- issue #10 spike: evaluate_observable_on redundancy/width ---
+  // Always-on counters sizing the per-molecule observable re-eval cost.
+  // A "key" is (observable, scope-id) where scope-id is the molecule for
+  // per-molecule scope or the complex for complex-wide scope; within one
+  // event the underlying graph is static, so two evaluate_observable_on
+  // calls on the same key MUST yield the same value — that gap is what
+  // memoization / incremental tracking would reclaim.
+  uint64_t eoo_calls = 0;           // evaluate_observable_on entries
+  uint64_t eoo_complex_wide = 0;    // ... in complex-wide scope
+  uint64_t eoo_embed_counts = 0;    // count_embeddings_* invocations (work width)
+  uint64_t eoo_events = 0;          // incremental_update entries (events)
+  uint64_t eoo_unchanged_total = 0; // result == last result for this key (run-wide)
+  uint64_t eoo_unchanged_intra = 0; // ... and key already computed this same event
+  uint64_t eoo_redundant_embed = 0; // count work attributable to unchanged-total calls
 };
 
 // ===========================================================================
@@ -1265,6 +1279,24 @@ inline void report_expr_eval(const ExprEvalProfile& p, double timing_wall) {
     std::fprintf(stderr, "  mean ns/sampled evaluate_local_rate call: %.1f\n",
                  static_cast<double>(p.evaluate_local_rate_ns) /
                      static_cast<double>(p.sampled_local_rate_calls));
+  // issue #10 spike: evaluate_observable_on redundancy.
+  if (p.eoo_calls > 0) {
+    auto const calls = static_cast<double>(p.eoo_calls);
+    double const embed = p.eoo_embed_counts > 0 ? static_cast<double>(p.eoo_embed_counts) : 1.0;
+    std::fprintf(stderr,
+                 "  [#10] evaluate_observable_on: calls=%llu  complex_wide=%llu (%.1f%%)  "
+                 "embed_counts=%llu  events=%llu  calls/event=%.1f\n",
+                 ull(p.eoo_calls), ull(p.eoo_complex_wide), 100.0 * p.eoo_complex_wide / calls,
+                 ull(p.eoo_embed_counts), ull(p.eoo_events),
+                 p.eoo_events > 0 ? calls / static_cast<double>(p.eoo_events) : 0.0);
+    std::fprintf(
+        stderr,
+        "  [#10] result-unchanged-vs-last: %llu calls (%.1f%%)  "
+        "of which intra-event %llu (%.1f%%)  |  redundant embed work %llu (%.1f%% of embed)\n",
+        ull(p.eoo_unchanged_total), 100.0 * p.eoo_unchanged_total / calls,
+        ull(p.eoo_unchanged_intra), 100.0 * p.eoo_unchanged_intra / calls,
+        ull(p.eoo_redundant_embed), 100.0 * p.eoo_redundant_embed / embed);
+  }
 }
 
 } // namespace rulemonkey
